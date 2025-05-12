@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -76,6 +77,10 @@ func main() {
 		}
 	}
 
+	if len(requests) >= 2 {
+		fmt.Printf("%s[Proxy] - %v\n", yellow, requests[0:2])
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
 	defer cancel()
 
@@ -121,19 +126,29 @@ func main() {
 	fmt.Println("\nDone.")
 }
 
-func sendRequest(url, method string, info RequestInfo, httpVer string) {
+func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
+	// 创建代理 URL
+	proxyURL := http.ProxyURL(&url.URL{
+		Scheme: "http", // 如果你有 SOCKS5 代理，可以设置为 "socks5"
+		Host:   info.Proxy,
+	})
+
+	// 使用代理
 	tr := &http.Transport{
+		Proxy:           proxyURL,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 	client := &http.Client{
 		Timeout:   5 * time.Second,
 		Transport: tr,
 	}
+
 	if httpVer == "2" {
 		http2.ConfigureTransport(tr)
 	}
 
-	req, err := http.NewRequest(method, url, nil)
+	// 创建请求
+	req, err := http.NewRequest(method, targetURL, nil)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to create request")
 		return
@@ -143,6 +158,7 @@ func sendRequest(url, method string, info RequestInfo, httpVer string) {
 		req.Header.Set("Cookie", info.Cookie)
 	}
 
+	// 执行请求
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Warn().Err(err).Str("proxy", info.Proxy).Msg("request failed")
@@ -150,12 +166,13 @@ func sendRequest(url, method string, info RequestInfo, httpVer string) {
 	}
 	defer resp.Body.Close()
 
+	// 记录成功的请求
 	mu.Lock()
 	successCount++
 	statusCode[resp.StatusCode]++
 	mu.Unlock()
 
-	log.Info().Int("status", resp.StatusCode).Str("method", method).Str("url", url).Msg("request complete")
+	log.Info().Int("status", resp.StatusCode).Str("method", method).Str("url", targetURL).Msg("request complete")
 }
 
 func readLines(path string) []string {
