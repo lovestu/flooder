@@ -53,7 +53,6 @@ func main() {
 	httpVer := os.Args[6]                   // HTTP版本 1/2/mix
 	mode := os.Args[7]                      // 模式，支持不同的模式（如 flood 或其他）
 
-	log.Info().Str("version", "v1.0").Msg("LeyN Flooder starting")
 	fmt.Printf("%s[INFO] - LeyN Flooderv1.0%s\n", green, reset)
 
 	title := getTitle(target)
